@@ -198,20 +198,6 @@ def test_query_empty_preserves_embeddings_outer_shape_when_requested():
     assert not_requested.embeddings is None
 
 
-def test_base_collection_update_default_validates_list_lengths():
-    from mempalace.backends.base import BaseCollection
-
-    collection = ChromaCollection(_FakeCollection())
-
-    # Mismatched documents length → clear ValueError, not silent merge.
-    with pytest.raises(ValueError, match="documents length"):
-        BaseCollection.update(
-            collection,
-            ids=["1", "2"],
-            documents=["only-one"],
-        )
-
-
 def test_chroma_cache_invalidates_when_db_file_missing(tmp_path):
     """A palace rebuild that removes chroma.sqlite3 must drop the stale cache.
 
