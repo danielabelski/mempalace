@@ -36,6 +36,7 @@ READABLE_EXTENSIONS = {
     ".jsx",
     ".tsx",
     ".json",
+    ".jsonl",
     ".yaml",
     ".yml",
     ".html",
@@ -62,7 +63,14 @@ SKIP_FILENAMES = {
 CHUNK_SIZE = 800  # chars per drawer
 CHUNK_OVERLAP = 100  # overlap between chunks
 MIN_CHUNK_SIZE = 50  # skip tiny chunks
-MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB — skip files larger than this
+MAX_FILE_SIZE = 500 * 1024 * 1024  # 500 MB — skip files larger than this.
+# Long Claude Code sessions and large transcript exports routinely exceed
+# 10 MB. The cap exists as a defensive rail against pathological binary
+# files, not as a limit on legitimate text. Per-drawer size is bounded
+# by CHUNK_SIZE, but larger sources still produce proportionally more
+# drawers and therefore more storage, embedding, and processing work —
+# and file reads are not streamed (the whole content is loaded into
+# memory before chunking), so memory use scales with source size too.
 
 
 # =============================================================================
@@ -264,16 +272,32 @@ def load_config(project_dir: str) -> dict:
     """Load mempalace.yaml from project directory (falls back to mempal.yaml)."""
     import yaml
 
-    config_path = Path(project_dir).expanduser().resolve() / "mempalace.yaml"
+    resolved_project_dir = Path(project_dir).expanduser().resolve()
+    config_path = resolved_project_dir / "mempalace.yaml"
     if not config_path.exists():
         # Fallback to legacy name
-        legacy_path = Path(project_dir).expanduser().resolve() / "mempal.yaml"
+        legacy_path = resolved_project_dir / "mempal.yaml"
         if legacy_path.exists():
             config_path = legacy_path
         else:
-            print(f"ERROR: No mempalace.yaml found in {project_dir}")
-            print(f"Run: mempalace init {project_dir}")
-            sys.exit(1)
+            wing_name = resolved_project_dir.name
+            print(
+                f"  No mempalace.yaml found in {resolved_project_dir} "
+                f"— using auto-detected defaults (wing='{wing_name}'). "
+                "Directories with the same basename will share a wing; "
+                "add mempalace.yaml to disambiguate.",
+                file=sys.stderr,
+            )
+            return {
+                "wing": wing_name,
+                "rooms": [
+                    {
+                        "name": "general",
+                        "description": "All project files",
+                        "keywords": ["general"],
+                    }
+                ],
+            }
     with open(config_path) as f:
         return yaml.safe_load(f)
 
@@ -497,8 +521,10 @@ def _extract_entities_for_metadata(content: str) -> str:
         if re.search(r"(?<!\w)" + re.escape(name) + r"(?!\w)", content):
             matched.add(name)
 
+    from .palace import _candidate_entity_words
+
     window = content[:_ENTITY_EXTRACT_WINDOW]
-    words = re.findall(r"\b[A-Z][a-z]{2,}\b", window)
+    words = _candidate_entity_words(window)
     freq: dict = {}
     for w in words:
         if w in _ENTITY_STOPLIST:
@@ -586,7 +612,7 @@ def process_file(
     chunks = chunk_text(content, source_file)
 
     if dry_run:
-        print(f"    [DRY RUN] {filepath.name} → room:{room} ({len(chunks)} drawers)")
+        print(f"    [DRY RUN] {filepath.name} -> room:{room} ({len(chunks)} drawers)")
         return len(chunks), room
 
     # Lock this file so concurrent agents don't interleave delete+insert.
@@ -763,7 +789,7 @@ def mine(
         print("  .gitignore: DISABLED")
     if include_ignored:
         print(f"  Include: {', '.join(sorted(normalize_include_paths(include_ignored)))}")
-    print(f"{'─' * 55}\n")
+    print(f"{'-' * 55}\n")
 
     if not dry_run:
         collection = get_collection(palace_path)
@@ -793,7 +819,7 @@ def mine(
             total_drawers += drawers
             room_counts[room] += 1
             if not dry_run:
-                print(f"  ✓ [{i:4}/{len(files)}] {filepath.name[:50]:50} +{drawers}")
+                print(f"  + [{i:4}/{len(files)}] {filepath.name[:50]:50} +{drawers}")
 
     print(f"\n{'=' * 55}")
     print("  Done.")
